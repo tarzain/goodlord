@@ -12,12 +12,13 @@ from elevenlabs import voices, generate, stream, set_api_key
 from deepgram import Deepgram
 import aiohttp
 import pyaudio
+import sys
 
 load_dotenv()
 # Define API keys and voice ID
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
 ELEVENLABS_API_KEY = os.getenv('ELEVEN_API_KEY')
-VOICE_ID = '21m00Tcm4TlvDq8ikWAM'
+VOICE_ID = 'I4a4XjttXQ0d5NBNXiMW'
 DEEPGRAM_API_KEY = os.getenv('DEEPGRAM_API_KEY')
 # Initialize Deepgram client
 client = Deepgram(DEEPGRAM_API_KEY)
@@ -25,7 +26,9 @@ client = Deepgram(DEEPGRAM_API_KEY)
 FORMAT = pyaudio.paInt16
 CHANNELS = 1
 RATE = 16000
-CHUNK = 2048
+CHUNK = 1000
+
+AI_SPEAKING = False
 
 # Set OpenAI API key
 openai.api_key = OPENAI_API_KEY
@@ -73,7 +76,7 @@ async def stream(audio_stream):
         if chunk:
             mpv_process.stdin.write(chunk)
             mpv_process.stdin.flush()
-
+    
     if mpv_process.stdin:
         mpv_process.stdin.close()
     mpv_process.wait()
@@ -98,8 +101,10 @@ async def text_to_speech_input_streaming(voice_id, text_iterator):
                     message = await websocket.recv()
                     data = json.loads(message)
                     if data.get("audio"):
+                        AI_SPEAKING = True
                         yield base64.b64decode(data["audio"])
                     elif data.get('isFinal'):
+                        AI_SPEAKING = False
                         break
                 except websockets.exceptions.ConnectionClosed:
                     print("Connection closed")
@@ -167,36 +172,78 @@ async def run_loop():
         stream.stop_stream()
         stream.close()
 
-    async def speech_to_text_stream():
-        """Stream audio from the microphone to Deepgram."""
-        await start_event.wait()
-        print("microphone started")
-        # Open a streaming session
-        try:
-            deepgramLive = await client.transcription.live(
-                { "model": "nova", "language": "en-US", 'punctuate': True, 'interim_results': True }
-            )
-        except Exception as e:
-            print(f'Could not open socket: {e}')
-            return
-        
+    # Open a websocket connection
+    query_params = {
+        'model': 'general',
+        'interim_results': 'true',
+        'endpointing': 'true',
+        'encoding': 'linear16',
+        'sample_rate': RATE,
+        'punctuation': 'true',
+        'profanity_filter': 'false',
+        'smart_formatting': 'true',
+        'redaction': 'false',
+        'channels': '1',
+    }
+    query_string = '&'.join([f'{k}={v}' for k, v in query_params.items()])
+    async with websockets.connect(f'wss://api.deepgram.com/v1/listen?{query_string}', extra_headers = { 'Authorization': f'token {DEEPGRAM_API_KEY}' }) as ws:
+        # If the request is successful, print the request ID from the HTTP header
+        print('🟢 Successfully opened connection')
+        print(f'Request ID: {ws.response_headers["dg-request-id"]}')
 
-        # Listen for the connection to close
-        deepgramLive.registerHandler(deepgramLive.event.CLOSE, lambda c: print(f"Connection closed with code {c}"))
-        
-        # Listen for any transcripts received from Deepgram and write them to the console
-        deepgramLive.registerHandler(deepgramLive.event.TRANSCRIPT_RECEIVED, print)
-        
-        # Start streaming
-        while True:
-            mic_data = await audio_queue.get()
-            print(f"sending data to deepgram: {len(mic_data)}")
-            deepgramLive.send(mic_data)
+        async def send_speech_to_text_stream(ws):
+            """Stream audio from the microphone to Deepgram using websockets."""
+            await start_event.wait()
+            print("microphone started")
+    
+            try:
+                while True:
+                    if(AI_SPEAKING):
+                        await ws.send(json.dumps({ "type": "KeepAlive" }))
+                    else:
+                        mic_data = await audio_queue.get()
+                        await ws.send(mic_data)
+            except KeyboardInterrupt as _:
+                await ws.send(json.dumps({
+                    'type': 'CloseStream'
+                }))
+                print(f'🔴 ERROR: Closed stream via keyboard interrupt')
+            except websockets.exceptions.InvalidStatusCode as e:
+                # If the request fails, print both the error message and the request ID from the HTTP headers
+                print(f'🔴 ERROR: Could not connect to Deepgram! {e.headers.get("dg-error")}')
+                print(f'🔴 Please contact Deepgram Support with request ID {e.headers.get("dg-request-id")}')
 
-    return await asyncio.gather(
-        asyncio.ensure_future(microphone()),
-        asyncio.ensure_future(speech_to_text_stream()),
-    )
+        async def receive_speech_to_text_stream(ws):
+            """Receive text from Deepgram and pass it to the chat completion function."""
+            try:
+                while True:
+                    response = await ws.recv()
+                    data = json.loads(response)
+                    if data.get('type') == 'Results':
+                        channel = data.get('channel')
+                        alternatives = channel.get('alternatives')
+                        if alternatives and len(alternatives) > 0:
+                            first_result = alternatives[0]
+                            transcript = first_result.get('transcript')
+                            if data.get('is_final'):
+                                print('\r' + ' ' * len(transcript), end='')  # Clear the previous line
+                                print('\r Replying to: ' + transcript, end='')  # Write over the cleared line
+                                if(len(transcript) > 0):
+                                    await chat_completion(transcript)
+                            else:
+                                print('\r' + ' ' * len(transcript), end='')
+                                print('\r' + transcript, end='')
+                        else:
+                            transcript = ""
+                        
+            except websockets.exceptions.ConnectionClosed:
+                print("Connection closed")
+
+        return await asyncio.gather(
+            asyncio.ensure_future(microphone()),
+            asyncio.ensure_future(send_speech_to_text_stream(ws)),
+            asyncio.ensure_future(receive_speech_to_text_stream(ws)),
+        )
 
 # Main execution
 if __name__ == "__main__":
@@ -204,5 +251,3 @@ if __name__ == "__main__":
 
     asyncio.run(run_loop())
     # asyncio.run(chat_completion(user_query))
-
-
