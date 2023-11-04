@@ -9,12 +9,23 @@ import subprocess
 import time
 from dotenv import load_dotenv
 from elevenlabs import voices, generate, stream, set_api_key
+from deepgram import Deepgram
+import aiohttp
+import pyaudio
 
 load_dotenv()
 # Define API keys and voice ID
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
 ELEVENLABS_API_KEY = os.getenv('ELEVEN_API_KEY')
 VOICE_ID = '21m00Tcm4TlvDq8ikWAM'
+DEEPGRAM_API_KEY = os.getenv('DEEPGRAM_API_KEY')
+# Initialize Deepgram client
+client = Deepgram(DEEPGRAM_API_KEY)
+
+FORMAT = pyaudio.paInt16
+CHANNELS = 1
+RATE = 16000
+CHUNK = 2048
 
 # Set OpenAI API key
 openai.api_key = OPENAI_API_KEY
@@ -123,9 +134,75 @@ async def chat_completion(query):
     await text_to_speech_input_streaming(VOICE_ID, text_iterator())
 
 
+async def run_loop():
+    audio_queue = asyncio.Queue()
+    start_event = asyncio.Event()  # Create an Event
+
+    # Used for microphone streaming only.
+    def mic_callback(input_data, frame_count, time_info, status_flag):
+        audio_queue.put_nowait(input_data)
+        return (input_data, pyaudio.paContinue)
+    
+    # Set up microphone if streaming from mic
+    async def microphone():
+        audio = pyaudio.PyAudio()
+        stream = audio.open(
+            format=FORMAT,
+            channels=CHANNELS,
+            rate=RATE,
+            input=True,
+            frames_per_buffer=CHUNK,
+            stream_callback=mic_callback,
+        )
+
+        stream.start_stream()
+        start_event.set()  # Set the event to trigger the other coroutines to start
+
+        global SAMPLE_SIZE
+        SAMPLE_SIZE = audio.get_sample_size(FORMAT)
+
+        while stream.is_active():
+            await asyncio.sleep(0.1)
+
+        stream.stop_stream()
+        stream.close()
+
+    async def speech_to_text_stream():
+        """Stream audio from the microphone to Deepgram."""
+        await start_event.wait()
+        print("microphone started")
+        # Open a streaming session
+        try:
+            deepgramLive = await client.transcription.live(
+                { "model": "nova", "language": "en-US", 'punctuate': True, 'interim_results': True }
+            )
+        except Exception as e:
+            print(f'Could not open socket: {e}')
+            return
+        
+
+        # Listen for the connection to close
+        deepgramLive.registerHandler(deepgramLive.event.CLOSE, lambda c: print(f"Connection closed with code {c}"))
+        
+        # Listen for any transcripts received from Deepgram and write them to the console
+        deepgramLive.registerHandler(deepgramLive.event.TRANSCRIPT_RECEIVED, print)
+        
+        # Start streaming
+        while True:
+            mic_data = await audio_queue.get()
+            print(f"sending data to deepgram: {len(mic_data)}")
+            deepgramLive.send(mic_data)
+
+    return await asyncio.gather(
+        asyncio.ensure_future(microphone()),
+        asyncio.ensure_future(speech_to_text_stream()),
+    )
+
 # Main execution
 if __name__ == "__main__":
-    user_query = "Hello, tell me a story that's only 1 sentences long."
-    asyncio.run(chat_completion(user_query))
+    user_query = "Hello, tell me a story that's only 1 sentence long."
+
+    asyncio.run(run_loop())
+    # asyncio.run(chat_completion(user_query))
 
 
