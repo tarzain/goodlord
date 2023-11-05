@@ -26,7 +26,7 @@ client = Deepgram(DEEPGRAM_API_KEY)
 FORMAT = pyaudio.paInt16
 CHANNELS = 1
 RATE = 16000
-CHUNK = 1000
+CHUNK = 100
 
 # Set OpenAI API key
 openai.api_key = OPENAI_API_KEY
@@ -76,17 +76,19 @@ async def run_loop():
             ["mpv", "--no-cache", "--no-terminal", "--", "fd://0"],
             stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
-
-        print("Started streaming audio")
+        if not semaphore.locked():
+            print("AI started speaking")
+            await semaphore.acquire()
         async for chunk in audio_stream:
             if chunk:
                 mpv_process.stdin.write(chunk)
                 mpv_process.stdin.flush()
-        
         if mpv_process.stdin:
             mpv_process.stdin.close()
         mpv_process.wait()
-
+        if semaphore.locked():
+            print("AI finished speaking")
+            semaphore.release()
 
     async def text_to_speech_input_streaming(voice_id, text_iterator):
         """Send text to ElevenLabs API and stream the returned audio."""
@@ -107,12 +109,8 @@ async def run_loop():
                         message = await websocket.recv()
                         data = json.loads(message)
                         if data.get("audio"):
-                            if semaphore.locked():
-                                semaphore.release()
                             yield base64.b64decode(data["audio"])
                         elif data.get('isFinal'):
-                            if not semaphore.locked():
-                                await semaphore.acquire()
                             break
                     except websockets.exceptions.ConnectionClosed:
                         print("Connection closed")
@@ -131,7 +129,14 @@ async def run_loop():
     async def chat_completion(query):
         """Retrieve text from OpenAI and pass it to the text-to-speech function."""
         response = await openai.ChatCompletion.acreate(
-            model='gpt-4', messages=[{'role': 'user', 'content': query}],
+            model='gpt-4', messages=[{
+                "role": "system",
+                "content": "You are a helpful assistant who is extremely terse and angry."
+            },
+            {
+                'role': 'user', 
+                'content': query
+            }],
             temperature=1, stream=True
         )
 
@@ -148,7 +153,8 @@ async def run_loop():
 
     # Used for microphone streaming only.
     def mic_callback(input_data, frame_count, time_info, status_flag):
-        audio_queue.put_nowait(input_data)
+        if not semaphore.locked():
+            audio_queue.put_nowait(input_data)
         return (input_data, pyaudio.paContinue)
     
     # Set up microphone if streaming from mic
@@ -203,6 +209,7 @@ async def run_loop():
                 while True:
                     mic_data = await audio_queue.get()
                     if semaphore.locked():
+                        print("AI is speaking, skipping mic data", end='\r', flush=True)
                         await ws.send(json.dumps({ "type": "KeepAlive" }))
                     else:
                         await ws.send(mic_data)
