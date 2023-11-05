@@ -18,7 +18,7 @@ load_dotenv()
 # Define API keys and voice ID
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
 ELEVENLABS_API_KEY = os.getenv('ELEVEN_API_KEY')
-VOICE_ID = 'I4a4XjttXQ0d5NBNXiMW'
+VOICE_ID = "TxGEqnHWrfWFTfGW9XjX" #'I4a4XjttXQ0d5NBNXiMW'
 DEEPGRAM_API_KEY = os.getenv('DEEPGRAM_API_KEY')
 # Initialize Deepgram client
 client = Deepgram(DEEPGRAM_API_KEY)
@@ -32,6 +32,8 @@ CHUNK = 100
 openai.api_key = OPENAI_API_KEY
 
 start_time = time.time()
+global messages
+messages = [{"role": "system", "content": "You are a helpful friend who is crass but keeps it real!"}]
 
 
 
@@ -128,25 +130,24 @@ async def run_loop():
 
     async def chat_completion(query):
         """Retrieve text from OpenAI and pass it to the text-to-speech function."""
+        global messages
+        new_messages = messages + [{'role': 'user', 'content': query}]
         response = await openai.ChatCompletion.acreate(
-            model='gpt-4', messages=[{
-                "role": "system",
-                "content": "You are a helpful assistant who is extremely terse and angry."
-            },
-            {
-                'role': 'user', 
-                'content': query
-            }],
+            model='gpt-4', messages=new_messages,
             temperature=1, stream=True
         )
+        messages = new_messages
 
         async def text_iterator():
+            generated_response = ""
             async for chunk in response:
                 delta = chunk['choices'][0]["delta"]
                 if 'content' in delta:
+                    generated_response += delta["content"]
                     yield delta["content"]
                 else:
                     break
+            messages.append({'role': 'assistant', 'content': generated_response})
             print("generating text took", time.time() - start_time, "seconds")
 
         await text_to_speech_input_streaming(VOICE_ID, text_iterator())
@@ -207,11 +208,11 @@ async def run_loop():
     
             try:
                 while True:
-                    mic_data = await audio_queue.get()
                     if semaphore.locked():
                         print("AI is speaking, skipping mic data", end='\r', flush=True)
                         await ws.send(json.dumps({ "type": "KeepAlive" }))
                     else:
+                        mic_data = await audio_queue.get()
                         await ws.send(mic_data)
             except KeyboardInterrupt as _:
                 await ws.send(json.dumps({
