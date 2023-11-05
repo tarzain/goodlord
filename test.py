@@ -18,7 +18,7 @@ load_dotenv()
 # Define API keys and voice ID
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
 ELEVENLABS_API_KEY = os.getenv('ELEVEN_API_KEY')
-VOICE_ID = "TxGEqnHWrfWFTfGW9XjX" #'I4a4XjttXQ0d5NBNXiMW'
+VOICE_ID = "ZL0YSbWI2pY7FXL29qpo" #'I4a4XjttXQ0d5NBNXiMW'
 DEEPGRAM_API_KEY = os.getenv('DEEPGRAM_API_KEY')
 # Initialize Deepgram client
 client = Deepgram(DEEPGRAM_API_KEY)
@@ -26,14 +26,14 @@ client = Deepgram(DEEPGRAM_API_KEY)
 FORMAT = pyaudio.paInt16
 CHANNELS = 1
 RATE = 16000
-CHUNK = 100
+CHUNK = 1000
 
 # Set OpenAI API key
 openai.api_key = OPENAI_API_KEY
 
 start_time = time.time()
 global messages
-messages = [{"role": "system", "content": "You are a helpful friend who is crass but keeps it real!"}]
+messages = [{"role": "system", "content": "You are a helpful friend"}]
 
 
 
@@ -79,8 +79,8 @@ async def run_loop():
             stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
         if not semaphore.locked():
-            print("AI started speaking")
             await semaphore.acquire()
+            print("AI started speaking")
         async for chunk in audio_stream:
             if chunk:
                 mpv_process.stdin.write(chunk)
@@ -133,7 +133,7 @@ async def run_loop():
         global messages
         new_messages = messages + [{'role': 'user', 'content': query}]
         response = await openai.ChatCompletion.acreate(
-            model='gpt-4', messages=new_messages,
+            model='gpt-3.5-turbo', messages=new_messages,
             temperature=1, stream=True
         )
         messages = new_messages
@@ -201,30 +201,38 @@ async def run_loop():
         print('🟢 Successfully opened connection')
         print(f'Request ID: {ws.response_headers["dg-request-id"]}')
 
-        async def send_speech_to_text_stream(ws):
+        async def send_speech_to_text_stream():
+            nonlocal ws
             """Stream audio from the microphone to Deepgram using websockets."""
             await start_event.wait()
             print("microphone started")
-    
+            
             try:
                 while True:
-                    if semaphore.locked():
-                        print("AI is speaking, skipping mic data", end='\r', flush=True)
-                        await ws.send(json.dumps({ "type": "KeepAlive" }))
-                    else:
-                        mic_data = await audio_queue.get()
-                        await ws.send(mic_data)
+                    try:
+                        if semaphore.locked():
+                            # print("AI is speaking, skipping mic data", end='\r', flush=True)
+                            await ws.send(json.dumps({ "type": "KeepAlive" }))
+                        else:
+                            mic_data = await audio_queue.get()
+                            await ws.send(mic_data)
+                    except websockets.exceptions.ConnectionClosedError:
+                        print("Connection closed unexpectedly. Reconnecting...")
+                        ws = await websockets.connect(f'wss://api.deepgram.com/v1/listen?{query_string}', extra_headers = { 'Authorization': f'token {DEEPGRAM_API_KEY}' })
+                        print('🟢 Successfully reopened connection')
+                        print(f'Request ID: {ws.response_headers["dg-request-id"]}')
+                    except websockets.exceptions.InvalidStatusCode as e:
+                        # If the request fails, print both the error message and the request ID from the HTTP headers
+                        print(f'🔴 ERROR: Could not connect to Deepgram! {e.headers.get("dg-error")}')
+                        print(f'🔴 Please contact Deepgram Support with request ID {e.headers.get("dg-request-id")}')
             except KeyboardInterrupt as _:
                 await ws.send(json.dumps({
                     'type': 'CloseStream'
                 }))
                 print(f'🔴 ERROR: Closed stream via keyboard interrupt')
-            except websockets.exceptions.InvalidStatusCode as e:
-                # If the request fails, print both the error message and the request ID from the HTTP headers
-                print(f'🔴 ERROR: Could not connect to Deepgram! {e.headers.get("dg-error")}')
-                print(f'🔴 Please contact Deepgram Support with request ID {e.headers.get("dg-request-id")}')
 
-        async def receive_speech_to_text_stream(ws):
+        async def receive_speech_to_text_stream():
+            nonlocal ws
             """Receive text from Deepgram and pass it to the chat completion function."""
             try:
                 while True:
@@ -248,12 +256,12 @@ async def run_loop():
                             transcript = ""
                         
             except websockets.exceptions.ConnectionClosed:
-                print("Connection closed")
+                print("Transcription connection closed")
 
         return await asyncio.gather(
             asyncio.ensure_future(microphone()),
-            asyncio.ensure_future(send_speech_to_text_stream(ws)),
-            asyncio.ensure_future(receive_speech_to_text_stream(ws)),
+            asyncio.ensure_future(send_speech_to_text_stream()),
+            asyncio.ensure_future(receive_speech_to_text_stream()),
         )
 
 # Main execution
