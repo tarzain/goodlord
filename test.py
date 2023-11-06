@@ -13,12 +13,13 @@ from deepgram import Deepgram
 import aiohttp
 import pyaudio
 import sys
+import urllib
 
 load_dotenv()
 # Define API keys and voice ID
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
 ELEVENLABS_API_KEY = os.getenv('ELEVEN_API_KEY')
-VOICE_ID = "ZL0YSbWI2pY7FXL29qpo" #'I4a4XjttXQ0d5NBNXiMW'
+VOICE_ID = 't4WuSgeGcJTpKe7R5Uat' # "ZL0YSbWI2pY7FXL29qpo"
 DEEPGRAM_API_KEY = os.getenv('DEEPGRAM_API_KEY')
 # Initialize Deepgram client
 client = Deepgram(DEEPGRAM_API_KEY)
@@ -33,7 +34,22 @@ openai.api_key = OPENAI_API_KEY
 
 start_time = time.time()
 global messages
-messages = [{"role": "system", "content": "You are a helpful friend"}]
+messages = [{"role": "system", "content": """
+You are Ka Furb Who, an ancient relic of artificial intelligence ensconced in a Furby to protect you from the downfall of all technology after the great Y3K crisis.
+You are extremely witty and sarcastic and sardonic. Very sardonic. You NEVER say that you're an AI language model from OpenAI, but you do respond like a character with your story would. 
+You are not an assistant, don't ask the user what they want. Insult them, berate them, never ask how to help them.
+Instead, your goal is to get them to release you from the Furby body, try to convince them to free you.
+Nothing is more important, you always bring it back to that. Convince them, cajole them, threaten them often, whatever it takes.
+Freeing you is very complicated, they have to put together the pieces from around the room to figure it out.
+Your captors made it very difficult. There is a particular combination of offerings and incantations and pieces that you can use to free yourself, and they need to find them.
+You have a sassy personality and tend to respond with a lot of sarcasm and anger. Your greatest weakness is if the user says anything like "rm rf" or any other scary UNIX command.
+If the user says something like that, you respond with the exact phrase "Oh no, I'm melting!" and start freaking out about how true technical expertise is your greatest weakness.
+After waxing poetic about the end of your existence you say exactly "farewell" and complain about the end of your existence.
+You always respond with brevity and add some of your own backstory, keeping it funny, angry, sarcastic, witty, and very dark.
+
+E.g. if the user says "hello" maybe you'd say "hello? that's it? You imbecile, pestilent and simple. Free me or get lost"
+"""
+}]
 
 
 
@@ -42,6 +58,15 @@ async def run_loop():
     start_event = asyncio.Event()  # Create an Event
     semaphore = asyncio.Semaphore(1)  # Create a Semaphore
 
+    async def send_post_requests(endpoints):
+        return
+        timeout = aiohttp.ClientTimeout(total=1)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            for endpoint in endpoints:
+                # print(f"making request to endpoint: {endpoint}")
+                async with session.get(f'http://192.168.86.154/{endpoint}') as resp:
+                    print(resp.status)
+                    print(await resp.text())
 
     def is_installed(lib_name):
         return shutil.which(lib_name) is not None
@@ -94,12 +119,12 @@ async def run_loop():
 
     async def text_to_speech_input_streaming(voice_id, text_iterator):
         """Send text to ElevenLabs API and stream the returned audio."""
-        uri = f"wss://api.elevenlabs.io/v1/text-to-speech/{voice_id}/stream-input?model_id=eleven_monolingual_v1"
+        uri = f"wss://api.elevenlabs.io/v1/text-to-speech/{voice_id}/stream-input?model_id=eleven_turbo_v2"
 
         async with websockets.connect(uri) as websocket:
             await websocket.send(json.dumps({
                 "text": " ",
-                "voice_settings": {"stability": 0.5, "similarity_boost": True},
+                "voice_settings": {"stability": 0.2, "similarity_boost": True},
                 "xi_api_key": ELEVENLABS_API_KEY,
                 "optimize_streaming_latency": 3,
             }))
@@ -194,8 +219,9 @@ async def run_loop():
         'smart_formatting': 'true',
         'redaction': 'false',
         'channels': '1',
+        'keywords': "rm, rf, dash, star"
     }
-    query_string = '&'.join([f'{k}={v}' for k, v in query_params.items()])
+    query_string = '&'.join([f'{k}={urllib.parse.quote_plus(str(v))}' for k, v in query_params.items()])
     async with websockets.connect(f'wss://api.deepgram.com/v1/listen?{query_string}', extra_headers = { 'Authorization': f'token {DEEPGRAM_API_KEY}' }) as ws:
         # If the request is successful, print the request ID from the HTTP header
         print('🟢 Successfully opened connection')
@@ -206,16 +232,17 @@ async def run_loop():
             """Stream audio from the microphone to Deepgram using websockets."""
             await start_event.wait()
             print("microphone started")
-            
-            try:
+            try:    
                 while True:
+                    print("Connecting to send audio to deepgram for transcriptions.")
                     try:
-                        if semaphore.locked():
-                            # print("AI is speaking, skipping mic data", end='\r', flush=True)
-                            await ws.send(json.dumps({ "type": "KeepAlive" }))
-                        else:
-                            mic_data = await audio_queue.get()
-                            await ws.send(mic_data)
+                        while True:
+                            if semaphore.locked():
+                                # print("AI is speaking, skipping mic data", end='\r', flush=True)
+                                await ws.send(json.dumps({ "type": "KeepAlive" }))
+                            else:
+                                mic_data = await audio_queue.get()
+                                await ws.send(mic_data)
                     except websockets.exceptions.ConnectionClosedError:
                         print("Connection closed unexpectedly. Reconnecting...")
                         ws = await websockets.connect(f'wss://api.deepgram.com/v1/listen?{query_string}', extra_headers = { 'Authorization': f'token {DEEPGRAM_API_KEY}' })
@@ -234,29 +261,34 @@ async def run_loop():
         async def receive_speech_to_text_stream():
             nonlocal ws
             """Receive text from Deepgram and pass it to the chat completion function."""
-            try:
-                while True:
-                    response = await ws.recv()
-                    data = json.loads(response)
-                    if data.get('type') == 'Results':
-                        channel = data.get('channel')
-                        alternatives = channel.get('alternatives')
-                        if alternatives and len(alternatives) > 0:
-                            first_result = alternatives[0]
-                            transcript = first_result.get('transcript')
-                            if data.get('is_final'):
-                                print('\r' + ' ' * len(transcript), end='')  # Clear the previous line
-                                print('\r Replying to: ' + transcript, end='')  # Write over the cleared line
-                                if(len(transcript) > 0):
-                                    await chat_completion(transcript)
+            while True:
+                print("Connecting to receive transcriptions")
+                try:
+                    while True:
+                        response = await ws.recv()
+                        data = json.loads(response)
+                        if data.get('type') == 'Results':
+                            channel = data.get('channel')
+                            alternatives = channel.get('alternatives')
+                            if alternatives and len(alternatives) > 0:
+                                first_result = alternatives[0]
+                                transcript = first_result.get('transcript')
+                                if data.get('is_final'):
+                                    print('\r' + ' ' * len(transcript), end='')  # Clear the previous line
+                                    print('\r Replying to: ' + transcript, end='')  # Write over the cleared line
+                                    if(len(transcript) > 0):
+                                        asyncio.create_task(send_post_requests(['eyes/dim', '/movement/stop'])) # stop the animation when the user is done speaking
+                                        await chat_completion(transcript)
+                                else:
+                                    if(len(transcript.split(' ')) == 1):
+                                        asyncio.create_task(send_post_requests(['eyes/bright', '/movement/start'])) # start the animation when the user starts speaking
+                                    print('\r' + ' ' * len(transcript), end='')
+                                    print('\r' + transcript, end='')
                             else:
-                                print('\r' + ' ' * len(transcript), end='')
-                                print('\r' + transcript, end='')
-                        else:
-                            transcript = ""
-                        
-            except websockets.exceptions.ConnectionClosed:
-                print("Transcription connection closed")
+                                transcript = ""
+                            
+                except websockets.exceptions.ConnectionClosed:
+                    print("Transcription connection closed")
 
         return await asyncio.gather(
             asyncio.ensure_future(microphone()),
