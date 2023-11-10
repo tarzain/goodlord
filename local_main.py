@@ -36,33 +36,20 @@ start_time = time.time()
 global messages
 messages = [{"role": "system", "content": open('prompt.txt', 'r').read()}]
 
-global keywords
-keywords = ["summon", "hello", "kafurboo", "hey", "hi", "rm", "rf", "okay"]
 
-global wake_word_detected
-wake_word_detected = False
-
-global episode_duration
-episode_duration = 30 # this is in seconds
-
-global episode_start # start time for a given episode
-episode_start = time.time()
 
 async def run_loop():
     audio_queue = asyncio.Queue()
     start_event = asyncio.Event()  # Create an Event
     semaphore = asyncio.Semaphore(1)  # Create a Semaphore
 
-    async def async_iter(lst):
-        for item in lst:
-            yield item
-
     async def send_post_requests(endpoints):
+        return
         timeout = aiohttp.ClientTimeout(total=1)
         async with aiohttp.ClientSession(timeout=timeout) as session:
             for endpoint in endpoints:
                 # print(f"making request to endpoint: {endpoint}")
-                async with session.get(f'http://192.168.0.172/{endpoint}') as resp:
+                async with session.get(f'http://192.168.86.154/{endpoint}') as resp:
                     print(resp.status)
                     print(await resp.text())
 
@@ -170,8 +157,6 @@ async def run_loop():
                     yield delta["content"]
                 else:
                     break
-            if "melting" in generated_response:
-                asyncio.create_task(send_post_requests(['movement/start', 'eyes/shutdown', 'movement/stop', 'eyes/dim'])) # stop the animation when the user is done speaking
             messages.append({'role': 'assistant', 'content': generated_response})
             print("generating text took", time.time() - start_time, "seconds")
 
@@ -219,7 +204,7 @@ async def run_loop():
         'smart_formatting': 'true',
         'redaction': 'false',
         'channels': '1',
-        'keywords': '&'.join(keywords)
+        'keywords': "rm&rf"
     }
     query_string = '&'.join([f'{k}={urllib.parse.quote_plus(str(v))}' for k, v in query_params.items()])
     async with websockets.connect(f'wss://api.deepgram.com/v1/listen?{query_string}', extra_headers = { 'Authorization': f'token {DEEPGRAM_API_KEY}' }) as ws:
@@ -231,8 +216,6 @@ async def run_loop():
             nonlocal ws
             """Stream audio from the microphone to Deepgram using websockets."""
             await start_event.wait()
-
-            await send_post_requests(['hello'])
             print("microphone started")
             try:    
                 while True:
@@ -262,18 +245,11 @@ async def run_loop():
 
         async def receive_speech_to_text_stream():
             nonlocal ws
-            global wake_word_detected
-            global episode_start
             """Receive text from Deepgram and pass it to the chat completion function."""
             while True:
                 print("Connecting to receive transcriptions")
                 try:
                     while True:
-                        if((time.time() - episode_start) > episode_duration and wake_word_detected):
-                            await text_to_speech_input_streaming(VOICE_ID, async_iter(["I've grown tired of your drivel.", "That's enough of you for now, farewell."]))
-                            asyncio.create_task(send_post_requests(['eyes/dim', 'movement/stop'])) # stop the animation when the user is done speaking
-                            wake_word_detected = False
-                            continue
                         response = await ws.recv()
                         data = json.loads(response)
                         if data.get('type') == 'Results':
@@ -284,21 +260,13 @@ async def run_loop():
                                 transcript = first_result.get('transcript')
                                 if data.get('is_final'):
                                     print('\r' + ' ' * len(transcript), end='')  # Clear the previous line
-                                    if not wake_word_detected:
-                                        for keyword in keywords:
-                                            if keyword in transcript:
-                                                wake_word_detected = True
-                                                transcript = ""
-                                                break
-                                        if wake_word_detected:
-                                            asyncio.create_task(send_post_requests(['eyes/bright', 'movement/start'])) # start the animation when the user starts speaking
-                                            episode_start = time.time()
-                                            continue
-                                    if (wake_word_detected and len(transcript) > 0):
-                                        print('\r Replying to: ' + transcript, end='')  # Write over the cleared line
-                                        asyncio.create_task(send_post_requests(['eyes/dim', 'movement/stop'])) # stop the animation when the user is done speaking
+                                    print('\r Replying to: ' + transcript, end='')  # Write over the cleared line
+                                    if(len(transcript) > 0):
+                                        asyncio.create_task(send_post_requests(['eyes/dim', '/movement/stop'])) # stop the animation when the user is done speaking
                                         await chat_completion(transcript)
                                 else:
+                                    if(len(transcript.split(' ')) == 1):
+                                        asyncio.create_task(send_post_requests(['eyes/bright', '/movement/start'])) # start the animation when the user starts speaking
                                     print('\r' + ' ' * len(transcript), end='')
                                     print('\r' + transcript, end='')
                             else:
