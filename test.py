@@ -14,6 +14,7 @@ import aiohttp
 import pyaudio
 import sys
 import urllib
+from pythonosc.udp_client import SimpleUDPClient
 
 load_dotenv()
 # Define API keys and voice ID
@@ -47,6 +48,14 @@ episode_duration = 30 # this is in seconds
 
 global episode_start # start time for a given episode
 episode_start = time.time()
+
+# Sending Midi Stuff test
+ip = "127.0.0.1"
+port = 1337
+
+client = SimpleUDPClient(ip, port)  # Create client
+
+client.send_message("/1/hacked", 1.0)   # Send float message
 
 async def run_loop():
     audio_queue = asyncio.Queue()
