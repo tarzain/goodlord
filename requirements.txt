@@ -76,6 +76,7 @@ Pygments @ file:///home/conda/feedstock_root/build_artifacts/pygments_1691408637
 python-dateutil @ file:///home/conda/feedstock_root/build_artifacts/python-dateutil_1626286286081/work
 python-dotenv==1.0.0
 python-multipart==0.0.6
+python-osc==1.8.3
 PyYAML==6.0.1
 pyzmq @ file:///Users/runner/miniforge3/conda-bld/pyzmq_1698062467802/work
 regex==2023.10.3
