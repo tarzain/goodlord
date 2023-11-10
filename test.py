@@ -15,6 +15,7 @@ import pyaudio
 import sys
 import urllib
 from pythonosc.udp_client import SimpleUDPClient
+import requests
 
 load_dotenv()
 # Define API keys and voice ID
@@ -32,6 +33,9 @@ CHUNK = 1000
 
 # Set OpenAI API key
 openai.api_key = OPENAI_API_KEY
+
+# comment this out to use the actual openai endpoint
+openai.api_base = "http://localhost:1234/v1"
 
 start_time = time.time()
 global messages
@@ -62,18 +66,21 @@ async def run_loop():
     start_event = asyncio.Event()  # Create an Event
     semaphore = asyncio.Semaphore(1)  # Create a Semaphore
 
+
     async def async_iter(lst):
         for item in lst:
             yield item
 
     async def send_post_requests(endpoints):
         timeout = aiohttp.ClientTimeout(total=1)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            for endpoint in endpoints:
-                # print(f"making request to endpoint: {endpoint}")
-                async with session.get(f'http://192.168.0.172/{endpoint}') as resp:
-                    print(resp.status)
-                    print(await resp.text())
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                for endpoint in endpoints:
+                    async with session.get(f'http://192.168.0.172/{endpoint}') as resp:
+                        print(resp.status)
+                        print(await resp.text())
+        except Exception as e:
+            print(f"An error occurred connecting to the local endpoint: {e}")
 
     def is_installed(lib_name):
         return shutil.which(lib_name) is not None
