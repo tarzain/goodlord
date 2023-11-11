@@ -61,7 +61,7 @@ global episode_start # start time for a given episode
 episode_start = time.time()
 
 global SPEECH_TIMEOUT
-SPEECH_TIMEOUT = 100
+SPEECH_TIMEOUT = 60
 
 # Sending Midi Stuff test
 ip = "192.168.0.186"
@@ -220,6 +220,7 @@ async def run_loop():
 
         async def text_iterator():
             global start_time
+            start_time = time.time()
             generated_response = ""
             async for chunk in response:
                 delta = chunk['choices'][0]["delta"]
@@ -295,11 +296,10 @@ async def run_loop():
             nonlocal ws
             """Stream audio from the microphone to Deepgram using websockets."""
             await start_event.wait()
-
-            await send_post_requests(['hello'])
+            await send_post_requests(['eyes/dim', 'movement/stop']) # stop the animation when the user is done speaking
             await trigger_furby_animation()
             print("microphone started")
-            try:    
+            try:
                 while True:
                     print("Connecting to send audio to deepgram for transcriptions.")
                     try:
