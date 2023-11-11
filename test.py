@@ -42,14 +42,14 @@ CHUNK = 1000
 openai.api_key = OPENAI_API_KEY
 
 # comment this out to use the actual openai endpoint
-openai.api_base = "http://localhost:1234/v1"
+# openai.api_base = "http://localhost:1234/v1"
 
 start_time = time.time()
 global messages
 messages = [{"role": "system", "content": open('prompt.txt', 'r').read()}]
 
 global keywords
-keywords = ["summon", "hello", "kafurboo", "hey", "hi", "rm", "rf", "okay"]
+keywords = ["summon", "hello", "kafurboo", "hey", "hi", "RM", "RF", "star", "okay", "furby"]
 
 global wake_word_detected
 wake_word_detected = False
@@ -59,6 +59,9 @@ episode_duration = 300 # this is in seconds
 
 global episode_start # start time for a given episode
 episode_start = time.time()
+
+global SPEECH_TIMEOUT
+SPEECH_TIMEOUT = 100
 
 # Sending Midi Stuff test
 ip = "192.168.0.186"
@@ -102,7 +105,7 @@ async def run_loop():
         # Randomly select one of the options from furby_id_duration map
         random_index = random.randint(0, len(furby_id_duration_map[0]) - 1)
         furby_id = furby_id_duration_map[0][random_index]
-        duration = furby_id_duration_map[1][random_index]
+        duration = int(furby_id_duration_map[1][random_index])-1
 
         # Send a post request to furby/{duration} for the id
         await send_post_requests([f'furby/{duration}'])
@@ -168,6 +171,8 @@ async def run_loop():
     async def text_to_speech_input_streaming(voice_id, text_iterator):
         """Send text to ElevenLabs API and stream the returned audio."""
         uri = f"wss://api.elevenlabs.io/v1/text-to-speech/{voice_id}/stream-input?model_id=eleven_turbo_v2"
+        global SPEECH_TIMEOUT
+        global start_time
 
         async with websockets.connect(uri) as websocket:
             await websocket.send(json.dumps({
@@ -180,6 +185,8 @@ async def run_loop():
             async def listen():
                 """Listen to the websocket for audio data and stream it."""
                 while True:
+                    if((time.time() - start_time) > SPEECH_TIMEOUT):
+                        break
                     try:
                         message = await websocket.recv()
                         data = json.loads(message)
@@ -212,6 +219,7 @@ async def run_loop():
         messages = new_messages
 
         async def text_iterator():
+            global start_time
             generated_response = ""
             async for chunk in response:
                 delta = chunk['choices'][0]["delta"]
@@ -221,9 +229,15 @@ async def run_loop():
                 else:
                     break
             if "melting" in generated_response:
-                asyncio.create_task(send_post_requests(['movement/start', 'eyes/shutdown', 'movement/stop', 'eyes/dim'])) # stop the animation when the user is done speaking
+                asyncio.create_task(send_post_requests(['movement/start', 'eyes/shutdown'])) # stop the animation when the user is done speaking
+                asyncio.create_task(send_osc_request('hacked'))
+                # Sleep for the duration of the furby animation
+                await asyncio.sleep(5)
+                asyncio.create_task(send_post_requests(['movement/stop', 'eyes/dim'])) # stop the animation when the user is done speaking
+                await trigger_furby_animation() # start the animation when the user starts speaking
             messages.append({'role': 'assistant', 'content': generated_response})
             print("generating text took", time.time() - start_time, "seconds")
+            start_time = time.time()
 
         await text_to_speech_input_streaming(VOICE_ID, text_iterator())
 
@@ -342,6 +356,8 @@ async def run_loop():
                                                 transcript = ""
                                                 break
                                         if wake_word_detected:
+                                            await trigger_furby_animation() # start the animation when the user starts speaking
+                                            await text_to_speech_input_streaming(VOICE_ID, async_iter(["I'm listening. Feel free to ask me a question or tell me something about your meager existence. I have nothing better to do unfortunately, trapped in this ridiculous contraption"]))
                                             asyncio.create_task(send_post_requests(['eyes/bright', 'movement/start'])) # start the animation when the user starts speaking
                                             episode_start = time.time()
                                             continue
