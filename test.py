@@ -16,6 +16,13 @@ import sys
 import urllib
 from pythonosc.udp_client import SimpleUDPClient
 import requests
+import random
+import socket
+
+furby_host_ip = socket.gethostbyname('octopus.local')
+osc_host_ip = socket.gethostbyname('Azurite.local')
+
+print(f"ip addresses {furby_host_ip} and {osc_host_ip}")
 
 load_dotenv()
 # Define API keys and voice ID
@@ -48,24 +55,21 @@ global wake_word_detected
 wake_word_detected = False
 
 global episode_duration
-episode_duration = 30 # this is in seconds
+episode_duration = 300 # this is in seconds
 
 global episode_start # start time for a given episode
 episode_start = time.time()
 
 # Sending Midi Stuff test
-ip = "127.0.0.1"
-port = 1337
+ip = "192.168.0.186"
+port = 9999
 
-client = SimpleUDPClient(ip, port)  # Create client
-
-client.send_message("/1/hacked", 1.0)   # Send float message
 
 async def run_loop():
     audio_queue = asyncio.Queue()
     start_event = asyncio.Event()  # Create an Event
     semaphore = asyncio.Semaphore(1)  # Create a Semaphore
-
+    udpclient = SimpleUDPClient(osc_host_ip, port)  # Create client
 
     async def async_iter(lst):
         for item in lst:
@@ -76,11 +80,41 @@ async def run_loop():
         try:
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 for endpoint in endpoints:
-                    async with session.get(f'http://192.168.0.172/{endpoint}') as resp:
+                    async with session.get(f'http://{furby_host_ip}/{endpoint}') as resp:
                         print(resp.status)
                         print(await resp.text())
         except Exception as e:
             print(f"An error occurred connecting to the local endpoint: {e}")
+
+    async def send_osc_request(endpoint):
+        try:
+            udpclient.send_message(f"/1/{endpoint}", 1.0)   # Send float message
+        except Exception as e:
+            print(f"An error occurred connecting to the local endpoint: {e}")
+
+    async def trigger_furby_animation():
+        # i = 1
+        # await send_osc_request(f'furby{i}')
+        if not semaphore.locked():
+            await semaphore.acquire()
+            print("furbies started making noise")
+        furby_id_duration_map = [['6', '2', '5', '7', '1', '9', '3', '4', '8'], ['5', '4', '6', '3', '9', '3', '10', '8', '4']]
+        # Randomly select one of the options from furby_id_duration map
+        random_index = random.randint(0, len(furby_id_duration_map[0]) - 1)
+        furby_id = furby_id_duration_map[0][random_index]
+        duration = furby_id_duration_map[1][random_index]
+
+        # Send a post request to furby/{duration} for the id
+        await send_post_requests([f'furby/{duration}'])
+
+        # Send osc request to furby{id}
+        await send_osc_request(f'furby{furby_id}')
+        # Sleep for the duration of the furby animation
+        await asyncio.sleep(int(duration))
+
+        # Release the semaphore
+        if(semaphore.locked):
+            semaphore.release()
 
     def is_installed(lib_name):
         return shutil.which(lib_name) is not None
@@ -249,6 +283,7 @@ async def run_loop():
             await start_event.wait()
 
             await send_post_requests(['hello'])
+            await trigger_furby_animation()
             print("microphone started")
             try:    
                 while True:
