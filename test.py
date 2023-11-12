@@ -42,7 +42,7 @@ CHUNK = 1000
 openai.api_key = OPENAI_API_KEY
 
 # comment this out to use the actual openai endpoint
-# openai.api_base = "http://localhost:1234/v1"
+openai.api_base = "http://localhost:1234/v1"
 
 start_time = time.time()
 global messages
@@ -61,7 +61,7 @@ global episode_start # start time for a given episode
 episode_start = time.time()
 
 global SPEECH_TIMEOUT
-SPEECH_TIMEOUT = 60
+SPEECH_TIMEOUT = 30
 
 # Sending Midi Stuff test
 ip = "192.168.0.186"
@@ -87,13 +87,13 @@ async def run_loop():
                         print(resp.status)
                         print(await resp.text())
         except Exception as e:
-            print(f"An error occurred connecting to the local endpoint: {e}")
+            print(f"An error occurred connecting to the furby endpoint: {e}")
 
     async def send_osc_request(endpoint):
         try:
             udpclient.send_message(f"/1/{endpoint}", 1.0)   # Send float message
         except Exception as e:
-            print(f"An error occurred connecting to the local endpoint: {e}")
+            print(f"An error occurred connecting to the osc endpoint: {e}")
 
     async def trigger_furby_animation():
         # i = 1
@@ -101,20 +101,22 @@ async def run_loop():
         if not semaphore.locked():
             await semaphore.acquire()
             print("furbies started making noise")
-        furby_id_duration_map = [['6', '2', '5', '7', '1', '9', '3', '4', '8'], ['5', '4', '6', '3', '9', '3', '10', '8', '4']]
-        # Randomly select one of the options from furby_id_duration map
-        random_index = random.randint(0, len(furby_id_duration_map[0]) - 1)
-        furby_id = furby_id_duration_map[0][random_index]
-        duration = int(furby_id_duration_map[1][random_index])-1
+        try:
+            furby_id_duration_map = [['6', '2', '5', '7', '1', '9', '3', '4', '8'], ['5', '4', '6', '3', '9', '3', '10', '8', '4']]
+            # Randomly select one of the options from furby_id_duration map
+            random_index = random.randint(0, len(furby_id_duration_map[0]) - 1)
+            furby_id = furby_id_duration_map[0][random_index]
+            duration = int(furby_id_duration_map[1][random_index])-1
 
-        # Send a post request to furby/{duration} for the id
-        await send_post_requests([f'furby/{duration}'])
+            # Send a post request to furby/{duration} for the id
+            await send_post_requests([f'furby/{duration}'])
 
-        # Send osc request to furby{id}
-        await send_osc_request(f'furby{furby_id}')
-        # Sleep for the duration of the furby animation
-        await asyncio.sleep(int(duration))
-
+            # Send osc request to furby{id}
+            await send_osc_request(f'furby{furby_id}')
+            # Sleep for the duration of the furby animation
+            await asyncio.sleep(int(duration))
+        except:
+            print("Exception in hitting furbies")
         # Release the semaphore
         if(semaphore.locked):
             semaphore.release()
@@ -312,13 +314,19 @@ async def run_loop():
                                 await ws.send(mic_data)
                     except websockets.exceptions.ConnectionClosedError:
                         print("Connection closed unexpectedly. Reconnecting...")
-                        ws = await websockets.connect(f'wss://api.deepgram.com/v1/listen?{query_string}', extra_headers = { 'Authorization': f'token {DEEPGRAM_API_KEY}' })
-                        print('🟢 Successfully reopened connection')
-                        print(f'Request ID: {ws.response_headers["dg-request-id"]}')
+                        try:
+                            ws = await websockets.connect(f'wss://api.deepgram.com/v1/listen?{query_string}', extra_headers = { 'Authorization': f'token {DEEPGRAM_API_KEY}' })
+                            print('🟢 Successfully reopened connection')
+                            print(f'Request ID: {ws.response_headers["dg-request-id"]}')
+                        except:
+                            print("Timeout reconnecting to deepgram")
                     except websockets.exceptions.InvalidStatusCode as e:
                         # If the request fails, print both the error message and the request ID from the HTTP headers
                         print(f'🔴 ERROR: Could not connect to Deepgram! {e.headers.get("dg-error")}')
                         print(f'🔴 Please contact Deepgram Support with request ID {e.headers.get("dg-request-id")}')
+                    except asyncio.exceptions.TimeoutError as e:
+                        print("Timeout connecting to deepgram")
+                        ws = await websockets.connect(f'wss://api.deepgram.com/v1/listen?{query_string}', extra_headers = { 'Authorization': f'token {DEEPGRAM_API_KEY}' })
             except KeyboardInterrupt as _:
                 await ws.send(json.dumps({
                     'type': 'CloseStream'
@@ -364,7 +372,7 @@ async def run_loop():
                                             continue
                                     if (wake_word_detected and len(transcript) > 0):
                                         print('\r Replying to: ' + transcript, end='')  # Write over the cleared line
-                                        await text_to_speech_input_streaming(VOICE_ID, async_iter(["ah hmmm"]))
+                                        await text_to_speech_input_streaming(VOICE_ID, async_iter(["I see"]))
                                         asyncio.create_task(send_post_requests(['eyes/dim', 'movement/stop'])) # stop the animation when the user is done speaking
                                         await chat_completion(transcript)
                                 else:
