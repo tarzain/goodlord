@@ -232,10 +232,10 @@ async def run_loop():
             if "melting" in generated_response:
                 asyncio.create_task(send_post_requests(['movement/start', 'eyes/shutdown'])) # stop the animation when the user is done speaking
                 asyncio.create_task(send_osc_request('hacked'))
+                await trigger_furby_animation() # start the animation when the user starts speaking
                 # Sleep for the duration of the furby animation
                 await asyncio.sleep(5)
                 asyncio.create_task(send_post_requests(['movement/stop', 'eyes/dim'])) # stop the animation when the user is done speaking
-                await trigger_furby_animation() # start the animation when the user starts speaking
             messages.append({'role': 'assistant', 'content': generated_response})
             print("generating text took", time.time() - start_time, "seconds")
             start_time = time.time()
@@ -305,7 +305,7 @@ async def run_loop():
                     try:
                         while True:
                             if semaphore.locked():
-                                # print("AI is speaking, skipping mic data", end='\r', flush=True)
+                                print("AI is speaking, skipping mic data", end='\r', flush=True)
                                 await ws.send(json.dumps({ "type": "KeepAlive" }))
                             else:
                                 mic_data = await audio_queue.get()
@@ -329,9 +329,9 @@ async def run_loop():
             nonlocal ws
             global wake_word_detected
             global episode_start
+            global start_time
             """Receive text from Deepgram and pass it to the chat completion function."""
             while True:
-                print("Connecting to receive transcriptions")
                 try:
                     while True:
                         if((time.time() - episode_start) > episode_duration and wake_word_detected):
@@ -357,12 +357,14 @@ async def run_loop():
                                                 break
                                         if wake_word_detected:
                                             await trigger_furby_animation() # start the animation when the user starts speaking
+                                            start_time = time.time()
                                             await text_to_speech_input_streaming(VOICE_ID, async_iter(["I'm listening. Feel free to ask me a question or tell me something about your meager existence. I have nothing better to do unfortunately, trapped in this ridiculous contraption"]))
                                             asyncio.create_task(send_post_requests(['eyes/bright', 'movement/start'])) # start the animation when the user starts speaking
                                             episode_start = time.time()
                                             continue
                                     if (wake_word_detected and len(transcript) > 0):
                                         print('\r Replying to: ' + transcript, end='')  # Write over the cleared line
+                                        await text_to_speech_input_streaming(VOICE_ID, async_iter(["ah hmmm"]))
                                         asyncio.create_task(send_post_requests(['eyes/dim', 'movement/stop'])) # stop the animation when the user is done speaking
                                         await chat_completion(transcript)
                                 else:
