@@ -19,6 +19,16 @@ import requests
 import random
 import socket
 
+# Adaptive filtering and VAD for echo cancellation and interruptions
+import numpy as np
+import adaptfilt as adf
+import webrtcvad
+
+# Adaptive filter parameters
+step = 0.05  # Step size
+M = 50       # Number of filter taps
+w = np.zeros(M)  # Initial filter coefficients
+
 # Define API keys and voice ID
 load_dotenv('.env.secret')
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
@@ -52,9 +62,27 @@ WAKE_WORDS = ["hello", "hey", "hi", "okay"]
 EPISODE_DURATION = 300 # this is in seconds
 SPEECH_TIMEOUT = 30 # also in seconds
 
+# Initialize adaptive filter for echo cancellation
+# Adaptive filter parameters
+step = 0.05  # Step size
+M = 50       # Number of filter taps
+w = np.zeros(M)  # Initial filter coefficients
+
+# Delay parameters
+DELAY_SIZE = 1024  # This value represents the delay in samples
+delay_buffer = asyncio.Queue(maxsize=DELAY_SIZE)
+
+# Initialize the delay buffer with zeros
+for _ in range(DELAY_SIZE):
+    delay_buffer.put_nowait(np.zeros(CHUNK, dtype=np.float64))
+
+# Initialize VAD
+vad = webrtcvad.Vad()
+vad.set_mode(1)
 
 async def run_loop():
-    audio_queue = asyncio.Queue()
+    mic_audio_queue = asyncio.Queue()
+    speaker_output_buffer = asyncio.Queue()
     start_event = asyncio.Event()  # Create an Event
     semaphore = asyncio.Semaphore(1)  # Create a Semaphore
 
@@ -84,9 +112,39 @@ async def run_loop():
         if buffer:
             yield buffer + " "
 
+    async def apply_echo_cancellation(mic_data, speaker_data):
+        global w
+        mic_signal = np.frombuffer(mic_data, dtype=np.int16)
+        mic_signal = np.float64(mic_signal)
+
+        # For simplicity, let's assume the speaker signal is available and synchronized with the mic signal.
+        # In a real-world application, this would come from another part of the system.
+        # Here, we take a dummy speaker signal for illustration.
+        # Replace this with your actual speaker signal.
+        speaker_signal = np.frombuffer(speaker_data, dtype=np.int16)
+        speaker_signal = np.float64(speaker_signal)
+
+        # Add the current speaker signal to the delay buffer
+        delay_buffer.put(speaker_signal)
+
+        # Get the delayed speaker signal from the buffer
+        if delay_buffer.full():
+            delayed_speaker_signal = delay_buffer.get()
+        else:
+            delayed_speaker_signal = np.zeros(CHUNK, dtype=np.float64)
+
+        # Apply adaptive filter
+        y, e, w = adf.nlms(delayed_speaker_signal, mic_signal, M, step, w=w, returnCoeffs=True)
+
+        # Convert 'e' back to bytes and put it in the speaker queue
+        processed_data = e.astype(np.int16).tobytes()
+        return processed_data
 
     async def stream(audio_stream):
         """Stream audio data using mpv player."""
+        global is_ai_speaking
+        global speaker_output_buffer
+        is_ai_speaking = True
         if not is_installed("mpv"):
             raise ValueError(
                 "mpv not found, necessary to stream audio. "
@@ -103,11 +161,13 @@ async def run_loop():
             if chunk:
                 mpv_process.stdin.write(chunk)
                 mpv_process.stdin.flush()
+                await speaker_output_buffer.put(convert_chunk_to_audio_data(chunk))
         if mpv_process.stdin:
             mpv_process.stdin.close()
         mpv_process.wait()
         if semaphore.locked():
             semaphore.release()
+        is_ai_speaking = False
 
     async def text_to_speech_input_streaming(voice_id, text_iterator):
         """Send text to ElevenLabs API and stream the returned audio."""
@@ -177,8 +237,28 @@ async def run_loop():
 
     # Used for microphone streaming only.
     def mic_callback(input_data, frame_count, time_info, status_flag):
-        if not semaphore.locked():
-            audio_queue.put_nowait(input_data)
+        global is_ai_speaking
+        global messages
+        global speaker_output_buffer
+        global SAMPLE_SIZE
+
+        # Apply echo cancellation
+        if not speaker_output_buffer.empty():
+            speaker_audio = speaker_output_buffer.get_nowait()
+            input_data = apply_echo_cancellation(input_data, speaker_audio)
+        
+        # Apply voice activity detection
+        user_is_speaking = vad.is_speech(input_data, SAMPLE_SIZE)
+
+        # If the user is speaking while the AI is speaking
+        if is_ai_speaking and user_is_speaking:
+            # Stop the AI from speaking
+            semaphore.release()
+            # Add the interruption to the messages object
+            messages.append({'role': 'user', 'content': 'User interrupted', 'interrupted': True})
+
+        # Add the cleaned audio data to the mic_audio_queue
+        mic_audio_queue.put_nowait(audio_data)     
         return (input_data, pyaudio.paContinue)
     
     # Set up microphone if streaming from mic
@@ -198,6 +278,7 @@ async def run_loop():
 
         global SAMPLE_SIZE
         SAMPLE_SIZE = audio.get_sample_size(FORMAT)
+        print("sample size", SAMPLE_SIZE)
 
         while stream.is_active():
             await asyncio.sleep(0.1)
@@ -247,7 +328,7 @@ async def run_loop():
                         if semaphore.locked():
                             await ws.send(json.dumps({ "type": "KeepAlive" }))
                         else:
-                            mic_data = await audio_queue.get()
+                            mic_data = await mic_audio_queue.get()
                             await ws.send(mic_data)
                 except (websockets.exceptions.ConnectionClosedError, asyncio.exceptions.TimeoutError) as e:
                     ws = await connect_to_deepgram()
