@@ -1,2 +1,4 @@
 .env.secret
-.vscode
+.vscode/*
+.DS_Store
+eval/
